@@ -14,6 +14,7 @@ import (
 	"github.com/crazy-max/ftpgrab/v7/internal/server"
 	"github.com/crazy-max/ftpgrab/v7/internal/server/ftp"
 	"github.com/crazy-max/ftpgrab/v7/internal/server/sftp"
+	"github.com/crazy-max/ftpgrab/v7/internal/status"
 	"github.com/docker/go-units"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -24,11 +25,12 @@ type Client struct {
 	config     *config.Download
 	db         *db.Client
 	server     *server.Client
+	status     *status.Tracker // may be nil
 	tempdirRun string
 }
 
 // New creates new grabber instance
-func New(dlConfig *config.Download, dbConfig *config.Db, serverConfig *config.Server) (client *Client, err error) {
+func New(dlConfig *config.Download, dbConfig *config.Db, serverConfig *config.Server, tracker *status.Tracker) (client *Client, err error) {
 	var dbCli *db.Client
 	var serverctl *server.Client
 
@@ -66,6 +68,7 @@ func New(dlConfig *config.Download, dbConfig *config.Db, serverConfig *config.Se
 		config: dlConfig,
 		db:     dbCli,
 		server: serverctl,
+		status: tracker,
 	}
 
 	if *dlConfig.TempFirst {
@@ -80,6 +83,15 @@ func New(dlConfig *config.Download, dbConfig *config.Db, serverConfig *config.Se
 func (c *Client) Grab(files []File) journal.Journal {
 	jnl := journal.New()
 	jnl.ServerHost = c.server.Common().Host
+
+	// The files this run will actually download, for the status page.
+	var queue []status.Item
+	for _, file := range files {
+		if st := c.getStatus(file); !st.IsSkipped() {
+			queue = append(queue, status.Item{File: path.Join(file.SrcDir, file.Info.Name()), Size: file.Info.Size()})
+		}
+	}
+	c.status.SetQueue(queue)
 
 	for _, file := range files {
 		if entry := c.download(file, 0); entry != nil {
@@ -125,6 +137,22 @@ func (c *Client) download(file File, retry int) *journal.Entry {
 
 	retrieveStart := time.Now()
 
+	transfer := c.status.Begin(entry.File, file.Info.Size())
+	retrying := false
+	defer func() {
+		if !retrying { // the retry records its own outcome
+			c.status.End(transfer, entry)
+		}
+	}()
+	startlog := sublogger.Info()
+	if transfer.Index > 0 {
+		startlog = startlog.Str("file", fmt.Sprintf("%d/%d", transfer.Index, transfer.Total))
+	}
+	if retry > 0 {
+		startlog = startlog.Int("attempt", retry+1)
+	}
+	startlog.Msg("Downloading")
+
 	destfolder := filepath.Dir(destpath)
 	if err := os.MkdirAll(destfolder, os.ModePerm); err != nil {
 		sublogger.Error().Err(err).Msg("Cannot create destination dir")
@@ -144,7 +172,9 @@ func (c *Client) download(file File, retry int) *journal.Entry {
 		return entry
 	}
 
-	err = c.server.Retrieve(srcpath, destfile)
+	stopProgress := c.watchProgress(sublogger, transfer)
+	err = c.server.Retrieve(srcpath, transfer.Writer(destfile))
+	stopProgress()
 	if err != nil {
 		if cleanupErr := c.closeAndRemoveTempFile(destfile); cleanupErr != nil {
 			sublogger.Warn().Err(cleanupErr).Str("path", destfile.Name()).Msg("Cannot clean destination file after download failure")
@@ -156,6 +186,7 @@ func (c *Client) download(file File, retry int) *journal.Entry {
 			entry.Level = journal.EntryLevelError
 			entry.Text = fmt.Sprintf("Cannot download file: %v", err)
 		} else {
+			retrying = true
 			return c.download(file, retry)
 		}
 	} else {
@@ -185,9 +216,12 @@ func (c *Client) download(file File, retry int) *journal.Entry {
 			}
 		}
 
-		sublogger.Info().
-			Str("duration", time.Since(retrieveStart).Round(time.Millisecond).String()).
-			Msg("File successfully downloaded")
+		elapsed := time.Since(retrieveStart)
+		donelog := sublogger.Info().Str("duration", elapsed.Round(time.Millisecond).String())
+		if elapsed > 0 {
+			donelog = donelog.Str("speed", units.HumanSize(float64(file.Info.Size())/elapsed.Seconds())+"/s")
+		}
+		donelog.Msg("File successfully downloaded")
 
 		entry.Level = journal.EntryLevelSuccess
 		entry.Text = fmt.Sprintf("%s successfully downloaded in %s",

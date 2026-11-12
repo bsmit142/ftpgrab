@@ -6,7 +6,9 @@ import (
 
 	"github.com/crazy-max/ftpgrab/v7/internal/config"
 	"github.com/crazy-max/ftpgrab/v7/internal/grabber"
+	"github.com/crazy-max/ftpgrab/v7/internal/journal"
 	"github.com/crazy-max/ftpgrab/v7/internal/notif"
+	"github.com/crazy-max/ftpgrab/v7/internal/status"
 	"github.com/hako/durafmt"
 	"github.com/robfig/cron/v3"
 	"github.com/rs/zerolog/log"
@@ -18,6 +20,7 @@ type FtpGrab struct {
 	cron    *cron.Cron
 	notif   *notif.Client
 	grabber *grabber.Client
+	status  *status.Tracker
 	jobID   cron.EntryID
 	locker  uint32
 }
@@ -29,12 +32,17 @@ func New(cfg *config.Config) (*FtpGrab, error) {
 		cron: cron.New(cron.WithParser(cron.NewParser(
 			cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor),
 		)),
+		status: status.New(cfg.Meta.Version),
 	}, nil
 }
 
 // Start starts ftpgrab
 func (fg *FtpGrab) Start() error {
 	var err error
+
+	if fg.cfg.Status != nil {
+		go fg.status.Serve(fg.cfg.Status.Listen)
+	}
 
 	// Run on startup
 	fg.Run()
@@ -50,6 +58,7 @@ func (fg *FtpGrab) Start() error {
 
 	// Start scheduler
 	fg.cron.Start()
+	fg.status.SetNextRun(fg.cron.Entry(fg.jobID).Next)
 	log.Info().Msgf("Next run in %s (%s)",
 		durafmt.Parse(time.Until(fg.cron.Entry(fg.jobID).Next)).LimitFirstN(2).String(),
 		fg.cron.Entry(fg.jobID).Next)
@@ -73,15 +82,28 @@ func (fg *FtpGrab) Run() {
 	start := time.Now()
 	var err error
 
+	// Status page: the deferred EndRun reads jnl and failure as they are at return.
+	var jnl journal.Journal
+	var failure string
+	fg.status.StartRun()
+	defer func() {
+		fg.status.EndRun(jnl.Count.Success, jnl.Count.Error, jnl.Count.Skip, failure)
+		if fg.jobID > 0 {
+			fg.status.SetNextRun(fg.cron.Entry(fg.jobID).Next)
+		}
+	}()
+
 	// Notification client
 	if fg.notif, err = notif.New(fg.cfg.Notif, fg.cfg.Meta); err != nil {
 		log.Error().Err(err).Msg("Cannot create notifiers")
+		failure = "Cannot create notifiers: " + err.Error()
 		return
 	}
 
 	// Grabber client
-	if fg.grabber, err = grabber.New(fg.cfg.Download, fg.cfg.Db, fg.cfg.Server); err != nil {
+	if fg.grabber, err = grabber.New(fg.cfg.Download, fg.cfg.Db, fg.cfg.Server, fg.status); err != nil {
 		log.Error().Err(err).Msg("Cannot create grabber")
+		failure = err.Error()
 		return
 	}
 	defer fg.grabber.Close()
@@ -95,7 +117,7 @@ func (fg *FtpGrab) Run() {
 	log.Info().Msgf("%d file(s) found", len(files))
 
 	// Grab
-	jnl := fg.grabber.Grab(files)
+	jnl = fg.grabber.Grab(files)
 	jnl.Duration = time.Since(start)
 	log.Info().
 		Str("duration", time.Since(start).Round(time.Millisecond).String()).

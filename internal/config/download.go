@@ -20,6 +20,8 @@ type Download struct {
 	HideSkipped   *bool       `yaml:"hideSkipped,omitempty" json:"hideSkipped,omitempty"`
 	TempFirst     *bool       `yaml:"tempFirst,omitempty" json:"tempFirst,omitempty"`
 	CreateBaseDir *bool       `yaml:"createBaseDir,omitempty" json:"createBaseDir,omitempty"`
+	// How often to log a download's progress; 0 turns it off.
+	ProgressInterval *time.Duration `yaml:"progressInterval,omitempty" json:"progressInterval,omitempty"`
 }
 
 // GetDefaults gets the default values
@@ -39,4 +41,5 @@ func (s *Download) SetDefaults() {
 	s.HideSkipped = new(false)
 	s.TempFirst = new(false)
 	s.CreateBaseDir = new(false)
+	s.ProgressInterval = new(30 * time.Second)
 }

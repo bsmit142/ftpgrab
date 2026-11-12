@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FTPGrab</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c2026; --muted: #667080; --line: #e3e6eb;
+    --accent: #2f6fde; --accent-soft: #e4edfc; --ok: #1f8a4c; --warn: #b7791f; --err: #c53030;
+    --track: #e9ecf1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --card: #1a1e24; --text: #e6e9ee; --muted: #8b95a5; --line: #2a3039;
+      --accent: #5b93f0; --accent-soft: #1d2a40; --ok: #43b774; --warn: #d9a441; --err: #ef6464;
+      --track: #262c35;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; background: var(--track); color: var(--muted);
+  }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .chip.downloading, .chip.listing { background: var(--accent-soft); color: var(--accent); }
+  .chip.downloading::before { animation: pulse 1.2s ease-in-out infinite; }
+  .chip.failed { color: var(--err); }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  .next { margin-left: auto; color: var(--muted); font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .card h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin: 0 0 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
+  }
+  .card h2 .extra { text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .name { font-size: 17px; font-weight: 600; word-break: break-all; }
+  .path { color: var(--muted); font-size: 13px; word-break: break-all; margin-top: 2px; }
+  .bar { height: 10px; background: var(--track); border-radius: 999px; overflow: hidden; margin: 14px 0 10px; }
+  .bar > div { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.6s ease; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 16px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); }
+  .alert { color: var(--err); margin-top: 6px; word-break: break-word; }
+  ul.queue { list-style: none; margin: 0; padding: 0; }
+  ul.queue li {
+    display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; align-items: center;
+    padding: 7px 0; border-top: 1px solid var(--line);
+  }
+  ul.queue li:first-child { border-top: 0; }
+  ul.queue .f { word-break: break-all; }
+  ul.queue li.active .f { font-weight: 600; color: var(--accent); }
+  ul.queue li.success .f, ul.queue li.warning .f, ul.queue li.error .f { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .icon { font-size: 13px; text-align: center; color: var(--muted); }
+  .icon.success { color: var(--ok); } .icon.warning { color: var(--warn); } .icon.error { color: var(--err); }
+  .icon.active { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 500; padding: 0 8px 6px 0; }
+  td { padding: 7px 8px 7px 0; border-top: 1px solid var(--line); vertical-align: top; }
+  td.f { word-break: break-all; }
+  td .why { color: var(--muted); font-size: 13px; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 18px; }
+  @media (max-width: 600px) {
+    .next { margin-left: 0; width: 100%; }
+    table .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>FTPGrab</h1>
+    <span id="chip" class="chip">Connecting…</span>
+    <span id="next" class="next"></span>
+  </header>
+  <section class="card" id="current"></section>
+  <section class="card" id="queue" hidden></section>
+  <section class="card" id="recent"></section>
+  <footer id="footer"></footer>
+</main>
+<script>
+"use strict";
+
+// Decimal units, matching ftpgrab's log lines.
+function bytes(n) {
+  if (n == null || n < 0) return "–";
+  const u = ["B", "kB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return (i === 0 ? n : n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0)) + " " + u[i];
+}
+function duration(s) {
+  if (s == null || s < 0 || !isFinite(s)) return "–";
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m " + sec + "s";
+  return sec + "s";
+}
+const clock = d => new Date(d).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const dayClock = d => {
+  const t = new Date(d), today = new Date().toDateString() === t.toDateString();
+  return today ? clock(d) : t.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + clock(d);
+};
+const base = p => p.split("/").filter(Boolean).pop() || p;
+const dir = p => p.slice(0, p.length - base(p).length).replace(/\/$/, "");
+const zero = d => !d || d.startsWith("0001-");
+
+// Builds elements; text only, so remote file names can't inject markup.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v; else if (k === "style") el.style.cssText = v; else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid.nodeType ? kid : String(kid));
+  return el;
+}
+const stat = (k, v) => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v));
+const ICON = { pending: "○", active: "↓", success: "✓", warning: "!", error: "✕", skip: "–" };
+
+function renderHeader(s) {
+  const chip = document.getElementById("chip");
+  const failed = s.phase === "idle" && s.run && s.run.failure;
+  chip.className = "chip " + (failed ? "failed" : s.phase);
+  chip.textContent = failed ? "Last run failed"
+    : s.phase === "downloading" ? (s.current ? "Downloading" : "Running")
+    : s.phase === "listing" ? "Listing files" : "Idle";
+  const next = document.getElementById("next");
+  if (zero(s.nextRun)) { next.textContent = ""; return; }
+  const left = (new Date(s.nextRun) - new Date(s.now)) / 1000;
+  next.textContent = s.phase === "idle"
+    ? "Next run " + (left > 0 ? "in " + duration(left) + " (" + clock(s.nextRun) + ")" : "now")
+    : "Next run " + clock(s.nextRun);
+}
+
+function renderCurrent(s) {
+  const el = document.getElementById("current");
+  const c = s.current;
+  if (c) {
+    el.replaceChildren(
+      h("h2", null, "Downloading", c.total > 1 ? h("span", { class: "extra" }, "file " + c.index + " of " + c.total) : null),
+      h("div", { class: "name" }, base(c.file)),
+      h("div", { class: "path" }, dir(c.file)),
+      h("div", { class: "bar" }, h("div", { style: "width:" + c.percent.toFixed(1) + "%" })),
+      h("div", { class: "stats" },
+        stat("Progress", c.percent.toFixed(1) + "%"),
+        stat("Downloaded", bytes(c.done) + " of " + bytes(c.size)),
+        stat("Speed", c.speed > 0 ? bytes(c.speed) + "/s" : "–"),
+        stat("ETA", duration(c.eta)),
+        stat("Elapsed", duration((new Date(s.now) - new Date(c.started)) / 1000)),
+      ),
+    );
+    return;
+  }
+  const r = s.run;
+  const kids = [h("h2", null, s.phase === "listing" ? "Checking the server" : "Last run")];
+  if (s.phase === "listing") {
+    kids.push(h("div", { class: "empty" }, "Listing remote files…"));
+  } else if (!r) {
+    kids.push(h("div", { class: "empty" }, "No run yet."));
+  } else {
+    kids.push(h("div", { class: "stats" },
+      stat("Started", dayClock(r.started)),
+      stat("Took", zero(r.finished) ? "running" : duration((new Date(r.finished) - new Date(r.started)) / 1000)),
+      stat("Downloaded", r.success),
+      stat("Failed", r.error),
+      stat("Skipped", r.skip),
+    ));
+    if (r.failure) kids.push(h("div", { class: "alert" }, r.failure));
+  }
+  el.replaceChildren(...kids);
+}
+
+function renderQueue(s) {
+  const el = document.getElementById("queue");
+  el.hidden = s.phase === "idle" || s.queue.length === 0; // when idle, Recent covers it
+  if (el.hidden) return;
+  const left = s.queue.filter(i => i.state === "pending" || i.state === "active").length;
+  const extra = left ? left + " left · " + bytes(s.remaining) + (s.eta >= 0 ? " · about " + duration(s.eta) : "") : "done";
+  el.replaceChildren(
+    h("h2", null, "This run", h("span", { class: "extra" }, extra)),
+    h("ul", { class: "queue" }, s.queue.map(i => {
+      const pct = i.state === "active" && s.current ? s.current.percent.toFixed(0) + "% · " : "";
+      return h("li", { class: i.state, title: i.file },
+        h("span", { class: "icon " + i.state }, ICON[i.state] || "○"),
+        h("span", { class: "f" }, base(i.file)),
+        h("span", { class: "num" }, pct + bytes(i.size)));
+    })),
+  );
+}
+
+function renderRecent(s) {
+  const el = document.getElementById("recent");
+  if (s.recent.length === 0) {
+    el.replaceChildren(h("h2", null, "Recent downloads"), h("div", { class: "empty" }, "Nothing downloaded since ftpgrab started."));
+    return;
+  }
+  el.replaceChildren(
+    h("h2", null, "Recent downloads"),
+    h("table", null,
+      h("thead", null, h("tr", null,
+        h("th", null, ""), h("th", null, "File"), h("th", { class: "hide-sm" }, "Size"),
+        h("th", { class: "hide-sm" }, "Time"), h("th", { class: "hide-sm" }, "Speed"), h("th", null, "Finished"))),
+      h("tbody", null, s.recent.map(r => h("tr", { title: r.file },
+        h("td", null, h("span", { class: "icon " + r.level }, ICON[r.level] || "•")),
+        h("td", { class: "f" }, base(r.file), r.level !== "success" ? h("div", { class: "why" }, r.text) : null),
+        h("td", { class: "num hide-sm" }, bytes(r.size)),
+        h("td", { class: "num hide-sm" }, duration(r.seconds)),
+        h("td", { class: "num hide-sm" }, r.level === "success" && r.seconds > 0 ? bytes(r.size / r.seconds) + "/s" : "–"),
+        h("td", { class: "num" }, dayClock(r.finished)),
+      ))),
+    ),
+  );
+}
+
+let failures = 0;
+async function refresh() {
+  try {
+    const res = await fetch("api/status", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    const s = await res.json();
+    failures = 0;
+    renderHeader(s); renderCurrent(s); renderQueue(s); renderRecent(s);
+    document.getElementById("footer").textContent = "ftpgrab " + s.version + " · updated " + new Date(s.now).toLocaleTimeString();
+  } catch (e) {
+    failures++;
+    const chip = document.getElementById("chip");
+    chip.className = "chip failed";
+    chip.textContent = "Can't reach ftpgrab";
+    document.getElementById("footer").textContent = String(e.message || e);
+  }
+  setTimeout(refresh, failures ? Math.min(30000, 2000 * failures) : 2000);
+}
+refresh();
+</script>
+</body>
+</html>

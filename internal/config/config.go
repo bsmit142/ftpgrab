@@ -21,6 +21,7 @@ type Config struct {
 	Server   *Server   `yaml:"server,omitempty" json:"server,omitempty" validate:"required"`
 	Download *Download `yaml:"download,omitempty" json:"download,omitempty" validate:"required"`
 	Notif    *Notif    `yaml:"notif,omitempty" json:"notif,omitempty"`
+	Status   *Status   `yaml:"status,omitempty" json:"status,omitempty" validate:"omitempty"`
 }
 
 // Load returns Config struct
