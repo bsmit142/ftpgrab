@@ -143,15 +143,17 @@ func (c *Client) Retrieve(path string, dest io.Writer) error {
 	return nil
 }
 
-// Close closes sftp connection
+// Close closes sftp connection. The sftp session runs over the ssh
+// connection, so it is closed first; the ssh connection is closed either way.
 func (c *Client) Close() error {
-	if err := c.ssh.Close(); err != nil {
-		return err
+	err := c.sftp.Close()
+	if err == io.EOF {
+		err = nil
 	}
-	if err := c.sftp.Close(); err != nil && err != io.EOF {
-		return err
+	if sshErr := c.ssh.Close(); err == nil {
+		err = sshErr
 	}
-	return nil
+	return err
 }
 
 func dialSSH(network, addr string, config *ssh.ClientConfig) (*ssh.Client, error) {
