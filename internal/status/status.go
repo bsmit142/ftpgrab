@@ -64,6 +64,7 @@ type Tracker struct {
 	queueSet bool
 	current  *Transfer
 	recent   []Result
+	vpn      *VPNState
 }
 
 // New creates a tracker
@@ -269,6 +270,7 @@ type Snapshot struct {
 	Remaining int64         `json:"remaining"` // bytes left in this run
 	ETA       float64       `json:"eta"`       // seconds for the whole queue, -1 if unknown
 	Recent    []Result      `json:"recent"`
+	VPN       *VPNState     `json:"vpn,omitempty"` // only when status.vpn is set
 }
 
 // Snapshot returns a copy of the current state
@@ -293,6 +295,11 @@ func (t *Tracker) Snapshot() Snapshot {
 	if t.run != nil {
 		run := *t.run
 		s.Run = &run
+	}
+	if t.vpn != nil {
+		vpn := *t.vpn
+		vpn.Addresses = slices.Clone(t.vpn.Addresses)
+		s.VPN = &vpn
 	}
 	if t.running {
 		s.Phase = "downloading"

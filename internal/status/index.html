@@ -8,13 +8,13 @@
   :root {
     --bg: #f6f7f9; --card: #ffffff; --text: #1c2026; --muted: #667080; --line: #e3e6eb;
     --accent: #2f6fde; --accent-soft: #e4edfc; --ok: #1f8a4c; --warn: #b7791f; --err: #c53030;
-    --track: #e9ecf1;
+    --track: #e9ecf1; --err-soft: #fdecec; --warn-soft: #fdf3e1;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #111418; --card: #1a1e24; --text: #e6e9ee; --muted: #8b95a5; --line: #2a3039;
       --accent: #5b93f0; --accent-soft: #1d2a40; --ok: #43b774; --warn: #d9a441; --err: #ef6464;
-      --track: #262c35;
+      --track: #262c35; --err-soft: #3a1e21; --warn-soft: #3a2f1a;
     }
   }
   * { box-sizing: border-box; }
@@ -68,6 +68,19 @@
   td { padding: 7px 8px 7px 0; border-top: 1px solid var(--line); vertical-align: top; }
   td.f { word-break: break-all; }
   td .why { color: var(--muted); font-size: 13px; }
+  .vpn {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 16px;
+    margin-bottom: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 14px;
+  }
+  .vpn .state { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+  .vpn .state::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+  .vpn .d { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vpn .problem { flex-basis: 100%; }
+  .vpn.ok .state { color: var(--ok); }
+  .vpn.bad { border-color: var(--err); background: var(--err-soft); }
+  .vpn.bad .state, .vpn.bad .problem { color: var(--err); }
+  .vpn.stale { border-color: var(--warn); background: var(--warn-soft); }
+  .vpn.stale .state { color: var(--warn); }
   footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 18px; }
   @media (max-width: 600px) {
     .next { margin-left: 0; width: 100%; }
@@ -82,6 +95,7 @@
     <span id="chip" class="chip">Connecting…</span>
     <span id="next" class="next"></span>
   </header>
+  <section class="vpn" id="vpn" hidden></section>
   <section class="card" id="current"></section>
   <section class="card" id="queue" hidden></section>
   <section class="card" id="recent"></section>
@@ -140,6 +154,29 @@ function renderHeader(s) {
   next.textContent = s.phase === "idle"
     ? "Next run " + (left > 0 ? "in " + duration(left) + " (" + clock(s.nextRun) + ")" : "now")
     : "Next run " + clock(s.nextRun);
+}
+
+function renderVPN(s) {
+  const el = document.getElementById("vpn");
+  const v = s.vpn;
+  el.hidden = !v;
+  if (!v) return;
+  const age = (new Date(s.now) - new Date(v.checked)) / 1000;
+  const stale = age > 60; // checks run every 15s
+  el.className = "vpn " + (stale ? "stale" : v.connected ? "ok" : "bad");
+  const label = stale ? "VPN status is stale" : v.connected ? "VPN connected" : "VPN down";
+  const d = text => h("span", { class: "d" }, text);
+  const host = v.host + (v.hostIp && v.hostIp !== v.host ? " (" + v.hostIp + ")" : "");
+  // Without the interface up, only the interface check ran.
+  el.replaceChildren(...[
+    h("span", { class: "state" }, label),
+    d(v.interface + (v.addresses && v.addresses.length ? " · " + v.addresses.join(", ") : "")),
+    v.up && v.host ? d(host + (v.routed ? " routed through " : " not routed through ") + v.interface) : null,
+    v.up && v.probe ? d(v.probeOk ? "tunnel DNS " + v.probeMs.toFixed(0) + " ms" : "tunnel DNS not answering") : null,
+    v.up ? d("↓ " + bytes(v.rxBytes) + " ↑ " + bytes(v.txBytes)) : null,
+    d("checked " + duration(age) + " ago"),
+    !v.connected && v.problem && !stale ? h("span", { class: "problem" }, v.problem) : null,
+  ].filter(Boolean));
 }
 
 function renderCurrent(s) {
@@ -229,7 +266,7 @@ async function refresh() {
     if (!res.ok) throw new Error(res.status + " " + res.statusText);
     const s = await res.json();
     failures = 0;
-    renderHeader(s); renderCurrent(s); renderQueue(s); renderRecent(s);
+    renderHeader(s); renderVPN(s); renderCurrent(s); renderQueue(s); renderRecent(s);
     document.getElementById("footer").textContent = "ftpgrab " + s.version + " · updated " + new Date(s.now).toLocaleTimeString();
   } catch (e) {
     failures++;

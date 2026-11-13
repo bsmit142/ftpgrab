@@ -42,6 +42,15 @@ func (fg *FtpGrab) Start() error {
 
 	if fg.cfg.Status != nil {
 		go fg.status.Serve(fg.cfg.Status.Listen)
+		if v := fg.cfg.Status.VPN; v != nil {
+			vpn := status.VPN{Interface: v.Interface, Probe: v.Probe}
+			if s := fg.cfg.Server.SFTP; s != nil {
+				vpn.Host, vpn.Port = s.Host, s.Port
+			} else if s := fg.cfg.Server.FTP; s != nil {
+				vpn.Host, vpn.Port = s.Host, s.Port
+			}
+			go fg.status.WatchVPN(vpn)
+		}
 	}
 
 	// Run on startup
